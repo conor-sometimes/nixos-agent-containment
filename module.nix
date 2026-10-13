@@ -220,14 +220,47 @@ in
           checkPhase = "";
         })
       ];
+      # Only rules that cannot fail go in the boot-time rule file: NixOS loads it in one go
+      # (auditctl -R), so a single failing line (a watch on a path that doesn't exist yet, such as
+      # /run/wrappers/bin/sudo at early boot) silently leaves the system with no rules at all.
       security.audit = {
         enable = true;
         backlogLimit = lib.mkDefault 8192;  # the default 1024 overflows under build-heavy agents
         rules = lib.concatLists (mapAttrsToList (name: a: lib.optionals a.audit.enable [
           "-a exit,always -F arch=b64 -S execve,execveat -F uid=${toString a.uid} -k agent-${name}-exec"
           "-a exit,always -F arch=b32 -S execve -F uid=${toString a.uid} -k agent-${name}-exec"
-          "-w /home/${name}/.ssh -p wa -k agent-${name}-ssh"
-        ]) agents) ++ map (p: "-w ${p} -p wa -k agent-watch") cfg.auditWatchPaths ++ cfg.auditExtraRules;
+        ]) agents);
+      };
+      # Watches and extra rules are added one by one once the system is up; a rule that fails is
+      # named in the journal and fails this unit (systemctl --failed), the others still load.
+      systemd.services.agent-audit-watches = let
+        sshAgents = filterAttrs (_: a: a.audit.enable) agents;
+        rules = pkgs.writeText "agent-audit-watches.rules" (concatStringsSep "\n" (
+          mapAttrsToList (name: _: "-w /home/${name}/.ssh -p wa -k agent-${name}-ssh") sshAgents
+          ++ map (p: "-w ${p} -p wa -k agent-watch") cfg.auditWatchPaths
+          ++ cfg.auditExtraRules) + "\n");
+        # Watching ~/.ssh is the point of the rule (it catches a key planted before the agent ever
+        # logs in), but a -w on a missing path fails to load, and the home may not exist at boot.
+        ensureSsh = concatStringsSep "\n" (mapAttrsToList (name: _:
+          "install -d -m 0700 -o ${name} -g ${config.users.users.${name}.group} /home/${name}/.ssh") sshAgents);
+      in {
+        description = "Audit watches for contained agents";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "audit-rules-nixos.service" "suid-sgid-wrappers.service" "systemd-user-sessions.service" "local-fs.target" ];
+        partOf = [ "audit-rules-nixos.service" ];  # reloading the rule file wipes watches: re-add them
+        restartTriggers = [ rules ];
+        serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
+        path = [ pkgs.audit pkgs.coreutils ];
+        script = ''
+          ${ensureSsh}
+          failed=0
+          while read -r rule; do
+            [ -n "$rule" ] || continue
+            # a rule is a list of auditctl arguments, split on purpose
+            auditctl $rule >/dev/null || { echo "agent-containment: could not add audit rule: $rule" >&2; failed=1; }
+          done < ${rules}
+          exit $failed
+        '';
       };
       security.auditd = {
         enable = true;
