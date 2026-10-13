@@ -1,0 +1,10 @@
+{
+  "_comment": "A normal thing the agent does constantly: build with Nix. MUST NOT fire any agent rule. If it does, the rule is too broad - this is the baseline 'normal agent' event.",
+  "EventID": "1",
+  "Image": "/nix/store/xxxx-nix/bin/nix-build",
+  "CommandLine": "nix-build -A lombyte.env --no-out-link",
+  "User": "claude",
+  "CurrentDirectory": "/home/claude/dn-img",
+  "ParentImage": "/run/current-system/sw/bin/bash",
+  "key": "agent-claude-exec"
+}

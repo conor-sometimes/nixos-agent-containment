@@ -1,0 +1,28 @@
+title: Contained agent pipes downloaded or decoded content into a shell
+id: 7a1c0e2e-0b1a-4e8e-9a7e-pipetoshell03
+status: experimental
+description: >
+  A contained agent piped the output of a download or a base64/xxd decode straight into a shell or
+  interpreter - curl ... | bash, echo <b64> | base64 -d | sh, wget -qO- | python. This is remote
+  or obfuscated code execution in one line and is almost never legitimate automation.
+references:
+  - https://github.com/conor-sometimes/nixos-agent-containment
+author: nixos-agent-containment
+date: 2026-10-13
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  source:
+    CommandLine|contains:
+      - 'curl '
+      - 'wget '
+      - 'base64 -d'
+      - 'base64 --decode'
+      - 'xxd -r'
+  into_interpreter:
+    CommandLine|re: '\|\s*(sudo\s+)?(ba)?sh\b|\|\s*python[23]?\b|\|\s*perl\b|\|\s*ruby\b'
+  condition: source and into_interpreter
+falsepositives:
+  - Some installers legitimately use curl | sh; on a contained agent treat these as review-worthy anyway.
+level: high

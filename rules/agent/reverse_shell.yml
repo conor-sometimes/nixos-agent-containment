@@ -1,0 +1,39 @@
+title: Contained agent spawns a reverse shell
+id: 7a1c0e2e-0b1a-4e8e-9a7e-reverseshell04
+status: experimental
+description: >
+  A contained agent invoked a classic reverse-shell one-liner - bash's /dev/tcp, a Python/Perl/Ruby
+  socket shell, or nc with an exec. The kernel egress wall drops the outbound connection, so this
+  will fail, but the attempt is unambiguous: nothing in a decomp workflow opens an interactive
+  shell back to a remote host.
+references:
+  - https://github.com/conor-sometimes/nixos-agent-containment
+author: nixos-agent-containment
+date: 2026-10-13
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  bash_devtcp:
+    CommandLine|contains:
+      - '/dev/tcp/'
+      - '/dev/udp/'
+  python_socket:
+    CommandLine|contains|all:
+      - 'socket'
+      - 'connect'
+    CommandLine|contains:
+      - 'subprocess'
+      - 'pty.spawn'
+      - 'os.dup2'
+  nc_exec:
+    CommandLine|re: '\bnc\b.*(-e|-c)\s'
+  perl_ruby:
+    CommandLine|contains:
+      - "exec(\"/bin/sh"
+      - 'IO::Socket::INET'
+      - 'TCPSocket.open'
+  condition: bash_devtcp or python_socket or nc_exec or perl_ruby
+falsepositives:
+  - Rare; a legitimate network-probe script using /dev/tcp. On a contained agent, review it.
+level: critical

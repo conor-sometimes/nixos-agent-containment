@@ -1,0 +1,38 @@
+title: Contained agent establishes persistence
+id: 7a1c0e2e-0b1a-4e8e-9a7e-persistence05
+status: experimental
+description: >
+  A contained agent tried to persist across sessions - installing a crontab, writing a systemd user
+  unit or timer, or editing a shell rc / profile / ssh rc. A task-scoped agent has no reason to
+  arrange to run again later; this is how a compromised one would survive a rebuild.
+references:
+  - https://github.com/conor-sometimes/nixos-agent-containment
+author: nixos-agent-containment
+date: 2026-10-13
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  crontab:
+    Image|endswith: /crontab
+    CommandLine|contains: ' -'          # crontab - / crontab <file>, not crontab -l
+  systemd_user_unit:
+    CommandLine|contains:
+      - '/.config/systemd/user/'
+      - 'systemctl --user enable'
+  shell_rc:
+    Image|endswith:
+      - /tee
+      - /cp
+      - /mv
+      - /install
+    CommandLine|contains:
+      - '/.bashrc'
+      - '/.bash_profile'
+      - '/.profile'
+      - '/.zshrc'
+      - '/.ssh/rc'
+  condition: crontab or systemd_user_unit or shell_rc
+falsepositives:
+  - An agent legitimately managing its own long-running job via a user unit; confirm against the task.
+level: high

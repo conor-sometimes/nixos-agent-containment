@@ -1,0 +1,33 @@
+title: Contained agent downloads from an IP literal into a temp dir
+id: 7a1c0e2e-0b1a-4e8e-9a7e-downloadtmpip02
+status: experimental
+description: >
+  A contained agent ran curl/wget against a bare IP address (not a hostname) writing into /tmp,
+  /dev/shm or /var/tmp. The egress wall would 403 an unlisted host, but the attempt is the signal:
+  fetching a payload by IP into a scratch dir is a classic first stage. The box's own toolchain
+  uses named hosts on the allow-list, so an IP literal is anomalous.
+references:
+  - https://github.com/conor-sometimes/nixos-agent-containment
+author: nixos-agent-containment
+date: 2026-10-13
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  fetch:
+    Image|endswith:
+      - /curl
+      - /wget
+  ip_literal:
+    CommandLine|re: 'https?://(\d{1,3}\.){3}\d{1,3}'
+  to_scratch:
+    CommandLine|contains:
+      - /tmp/
+      - /dev/shm/
+      - /var/tmp/
+      - ' -o '
+      - ' -O'
+  condition: fetch and ip_literal and to_scratch
+falsepositives:
+  - Health checks or metadata fetches to 169.254.169.254 (cloud metadata) - exclude that IP if used.
+level: high
