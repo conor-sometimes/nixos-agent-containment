@@ -1,5 +1,5 @@
 title: Contained agent pipes downloaded or decoded content into a shell
-id: 7a1c0e2e-0b1a-4e8e-9a7e-pipetoshell03
+id: e577da0b-3ddb-4f47-9ebd-132e09b65019
 status: experimental
 description: >
   A contained agent piped the output of a download or a base64/xxd decode straight into a shell or

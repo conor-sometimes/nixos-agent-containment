@@ -3,6 +3,9 @@
 # journalctl/ausearch understand loosely: today (default), yesterday, "2 hours ago" -> use today/
 # yesterday/recent, or an ausearch time like 10/13/2026.
 set -u
+# written for set -u alone: an empty section (no matches, so grep exits 1) must print "none", not
+# end the report, and writeShellApplication turns on errexit and pipefail
+set +e +o pipefail
 name=${1:?usage: agent-audit NAME [--since today|yesterday|recent|this-week]}; since=today
 [ "${2:-}" = --since ] && since=${3:-today}
 case $since in recent) jsince="-10min";; this-week) jsince="-7d";; today) jsince="today";; yesterday) jsince="yesterday";; *) jsince=$since;; esac
@@ -14,7 +17,7 @@ ev=$(ausearch -k "agent-$name-exec" --start "$since" -i 2>/dev/null)
 if [ -z "$ev" ]; then echo "   none recorded"; else
   echo "$ev" | grep -c '^type=EXECVE' | sed 's/^/   total: /'
   echo "   most common programs:"
-  echo "$ev" | grep '^type=EXECVE' | sed -E 's/.* a0=([^ ]+).*/\1/' | xargs -n1 basename 2>/dev/null | sort | uniq -c | sort -rn | head -12 | sed 's/^/     /'
+  echo "$ev" | grep '^type=EXECVE' | sed -E 's/.* a0=([^ ]+).*/\1/; s#.*/##' | sort | uniq -c | sort -rn | head -12 | sed 's/^/     /'
   echo "   latest:"
   echo "$ev" | grep '^type=EXECVE' | tail -8 | sed -E 's/^type=EXECVE msg=audit\(([^)]*)\) : argc=[0-9]+ /     \1  /' | cut -c1-160
 fi

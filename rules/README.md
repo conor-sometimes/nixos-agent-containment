@@ -6,15 +6,15 @@ command (auditd); these rules turn that log into alerts — the half that actual
 
 Self-contained on purpose: this directory is plain [Sigma](https://github.com/SigmaHQ/sigma) with
 no Nix in it, so anyone with auditd can copy it. The module's `detection.enable` wires the pipeline
-around it (Laurel + Zircolite + a nightly Discord digest); see the repo README. If the rules ever
+around it (Laurel + Zircolite, alerts to the journal and `agent-detections`; see the repo README). If the rules ever
 outgrow this repo — someone wants them without Nix, or one goes upstream to SigmaHQ — `git subtree
 split rules/` lifts them out cleanly.
 
 ## Pipeline these assume
 
     auditd (execve, from the containment) -> Laurel (one JSON event per exec, argv joined, parent
-    chain resolved) -> Zircolite runs these rules -> high-severity to Discord now, the rest to a
-    nightly digest read out at session start.
+    chain resolved) -> Zircolite runs these rules every 15 minutes -> alerts kept per day,
+    high/critical to the journal, a summary line at login for admins.
 
 `logsource: { product: linux, category: process_creation }` maps onto Laurel's normalised execve
 events: `Image` is the executable, `CommandLine` is the joined argv. That's the same logsource
@@ -30,6 +30,7 @@ noisy baseline, and `agent/` holds the agent-specific ones that are the point.
 | pipe_to_shell | high | curl/base64/xxd piped into sh/python/perl/ruby |
 | reverse_shell | critical | /dev/tcp, python/perl/ruby socket shells, nc -e |
 | persistence | high | crontab, systemd user units, shell rc / ssh rc edits |
+| privilege_escalation_attempt | high | sudo, su, doas, pkexec, run0 (the agent has no way up, so any try is news) |
 
 The interesting rules aren't "curl to pastebin" — they're what an agent does when it goes sideways:
 reach for a credential, decode-and-run, phone home, or arrange to run again. The egress wall blocks
@@ -44,7 +45,7 @@ record the before/after. Each rule's `falsepositives:` is the starting point.
 
 ## Testing a rule
 
-`tests/` holds sample normalised events (one JSON event per file). Each `*.expect-<rule-id>.json`
+`tests/` holds sample normalised events (one JSON event per file). Each `*.expect-<rule file name>.json`
 must fire its rule under Zircolite; a benign event must not. The point is one *deliberate*
 true positive you created — run the harmless-but-forbidden command as the agent, confirm the rule
 fires with the right argv in the alert — beats any number of theoretical ones.

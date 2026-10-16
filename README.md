@@ -86,6 +86,34 @@ journalctl -k --since today | grep agent-<name>-out-drop
 A routine worth keeping: skim `agent-audit` after each long agent session, and re-read the refused
 list before adding a host to the allow-list.
 
+## Detection (optional)
+
+The walls block the *success*; detection flags the *attempt*. With
+`services.agentContainment.detection.enable = true`:
+
+    auditd (each agent's execve) -> Laurel (one JSON event per exec, argv joined, parent resolved)
+      -> every 15 min: new events flattened to Sigma's process_creation fields
+      -> Zircolite runs the Sigma rules -> alerts kept per day, high/critical to the journal
+
+The rules are this repo's agent-specific set ([rules/](rules/): credential reads, download by IP
+into a temp dir, pipe to shell, reverse shells, persistence, sudo/su attempts) plus SigmaHQ's Linux process_creation
+rules from a pinned release as the noisy baseline.
+
+```
+sudo agent-detections               # hits per rule, events checked per day, latest high/critical
+sudo agent-detections --days 7 --all
+journalctl -t agent-detection       # high and critical as they were found
+```
+
+Wheel users get a one-line summary at login. The agents can't read it, or the alerts: an agent
+that can see which rules fired can learn its way around them. Tuning is declarative:
+`detection.excludeRules` takes rule titles, so each false positive you drop is a reviewed line in
+your config. `/var/lib/agent-detection/counts.tsv` holds hits per rule for every pass, which gives
+the before and after numbers for a baseline week and a tuned week.
+
+Limits: detection runs every 15 minutes, so it is a review queue, not a tripwire. It sees execs,
+not file reads by a program that is already running.
+
 ## Options
 
 Per agent (`services.agentContainment.agents.<name>`): `uid` (fixed; rules match on it), `shell`,
@@ -94,6 +122,8 @@ allowedHostPatterns, proxyPort}`, `limits.{cpuQuota, memoryHigh, memoryMax, task
 `audit.enable`, `ssh.{lockDown, addToAllowUsers}`, `allowNixBuilds`. Global:
 `nixBuilders.wallWith` (agent whose wall the nixbld users share), `auditWatchPaths` and
 `auditExtraRules` (default: audit every sudo exec).
+`detection.{enable, rules, excludeRules, interval, retentionDays, laurelLogSize,
+laurelLogGenerations}` (see Detection above).
 `ssh.addToAllowUsers` only makes sense if you already set `AllowUsers` (adding to an unset list
 would lock everyone else out). Assertions refuse an agent in wheel, Nix builds without a builder
 wall, and two agents on one proxy port. See [module.nix](module.nix).

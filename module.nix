@@ -6,7 +6,8 @@
 #   - resource limits on its whole login (systemd slice: CPU, memory, tasks)
 #   - an audit trail of every program it runs (auditd)
 #   - ssh: a shell and nothing else (no agent/port/socket forwarding, no tunnels)
-# Optionally, Nix builds for an agent, with the nixbld build users behind the same wall.
+# Optionally, Nix builds for an agent, with the nixbld build users behind the same wall, and
+# detection: Sigma rules over the audit trail (Laurel + Zircolite), so attempts are flagged.
 # See README.md for the threat model and what this does NOT protect against.
 { config, lib, pkgs, ... }:
 
@@ -84,6 +85,60 @@ let
 
   agents = cfg.agents;
   walled = filterAttrs (_: a: a.egress.enable) agents;
+  audited = filterAttrs (_: a: a.audit.enable) agents;
+  det = cfg.detection;
+
+  # SigmaHQ's quarterly release: its Linux process_creation rules are the generic baseline.
+  sigmahq = pkgs.fetchFromGitHub {
+    owner = "SigmaHQ"; repo = "sigma"; rev = "r2026-07-01";
+    hash = "sha256-kb4EcQN9xmA2lYUh6SCG7pST39/Ygoakv/2TwDqgucw=";
+  };
+
+  # nixpkgs' zircolite wrapper misses two imports (chardet, RestrictedPython) as of 26.05, and
+  # pySigma is needed to read rules as Sigma YAML: run its script with a complete interpreter.
+  zircolite = pkgs.writeShellApplication {
+    name = "zircolite";
+    text = ''
+      exec ${pkgs.python3.withPackages (p: with p; [
+        orjson xxhash colorama tqdm chardet restrictedpython pysigma pysigma-backend-sqlite
+        evtx lxml jinja2 requests aiohttp elasticsearch
+      ])}/bin/python3 ${pkgs.zircolite}/share/zircolite/zircolite.py "$@"
+    '';
+  };
+
+  laurelConf = pkgs.writeText "laurel.toml" ''
+    directory = "/var/log/laurel"
+    user = "_laurel"
+    input = "stdin"
+    [auditlog]
+    file = "audit.log"
+    size = ${toString det.laurelLogSize}
+    generations = ${toString det.laurelLogGenerations}
+    [state]
+    file = "state"
+    max-age = 60
+    [transform]
+    execve-argv = [ "array", "string" ]
+    [translate]
+    universal = true
+    user-db = true
+    [enrich]
+    pid = true
+    script = true
+    systemd = true
+  '';
+
+  detectEnv = {
+    LAUREL_DIR = "/var/log/laurel";
+    # "${p}" copies a path into the store; toString would give the source checkout's path, which
+    # the host doesn't have (and Zircolite skips a missing ruleset without a word)
+    RULES = concatStringsSep " " (map (p: "${p}") det.rules);
+    EXCLUDE = concatStringsSep "\n" det.excludeRules;
+    ZIRCOLITE_MAPPINGS = "${pkgs.zircolite}/share/zircolite/config/fieldMappings.json";
+    SUMMARY = "/run/agent-detection-summary";
+    RETENTION_DAYS = toString det.retentionDays;
+    STATE_DIR = "/var/lib/agent-detection";
+  };
 in
 {
   options.services.agentContainment = {
@@ -105,6 +160,30 @@ in
     auditWatchPaths = mkOption {
       type = types.listOf types.str; default = [ "/etc/ssh" "/etc/sudoers" "/etc/shadow" ];
       description = "Paths whose writes are audited whenever any agent is audited (plus each agent's ~/.ssh).";
+    };
+    detection = {
+      enable = mkOption {
+        type = types.bool; default = false;
+        description = ''Sigma rules over the audited agents' commands: Laurel turns auditd's records into
+          JSON, and every `interval` Zircolite runs `rules` over the new execs. Alerts are kept per day
+          under /var/lib/agent-detection, high and critical ones also go to the journal, and wheel users
+          see a one-line summary at login. Report: `sudo agent-detections`.'';
+      };
+      rules = mkOption {
+        type = types.listOf types.path;
+        default = [ ./rules/agent "${sigmahq}/rules/linux/process_creation" ];
+        defaultText = lib.literalExpression ''[ ./rules/agent "''${sigmahq}/rules/linux/process_creation" ]'';
+        description = "Sigma rule files or directories (process_creation). Default: this repo's agent rules plus SigmaHQ's Linux set as the noisy baseline.";
+      };
+      excludeRules = mkOption {
+        type = types.listOf types.str; default = [ ];
+        example = [ "Curl Usage on Linux" ];
+        description = "Rule titles to drop: the record of tuning (each entry is a false positive that was judged).";
+      };
+      interval = mkOption { type = types.str; default = "*:0/15"; description = "systemd OnCalendar of the detection pass."; };
+      retentionDays = mkOption { type = types.int; default = 30; description = "Days of alerts to keep."; };
+      laurelLogSize = mkOption { type = types.int; default = 50000000; description = "Laurel's log rotation size in bytes."; };
+      laurelLogGenerations = mkOption { type = types.int; default = 20; description = "Rotated Laurel logs to keep (a pass must run before this many fill up)."; };
     };
   };
 
@@ -266,6 +345,61 @@ in
         enable = true;
         settings = { max_log_file = lib.mkDefault 100; num_logs = lib.mkDefault 10; max_log_file_action = lib.mkDefault "rotate"; };
       };
+    })
+
+    (mkIf (det.enable && audited != { }) {
+      # Laurel: auditd plugin writing one JSON object per event (argv joined, parent process resolved)
+      users.users._laurel = { isSystemUser = true; group = "_laurel"; description = "Laurel audit log transformer"; };
+      users.groups._laurel = { };
+      systemd.tmpfiles.rules = [ "d /var/log/laurel 0750 _laurel _laurel -" ];
+      security.auditd.plugins.laurel = {
+        active = true;
+        path = "${pkgs.laurel}/bin/laurel";
+        args = [ "--config" "${laurelConf}" ];
+        format = "string";
+      };
+
+      systemd.services.agent-detection = {
+        description = "Sigma rules over the contained agents' commands";
+        after = [ "auditd.service" ];
+        environment = detectEnv;
+        serviceConfig = {
+          Type = "oneshot";
+          StateDirectory = "agent-detection";
+          StateDirectoryMode = "0700";
+          WorkingDirectory = "/var/lib/agent-detection";
+          Nice = 10;
+          IOSchedulingClass = "idle";
+          ExecStart = lib.getExe (pkgs.writeShellApplication {
+            name = "agent-detect";
+            runtimeInputs = [ zircolite ] ++ (with pkgs; [ jq coreutils findutils util-linux ]);
+            text = builtins.readFile ./agent-detect.sh;
+          });
+        };
+      };
+      systemd.timers.agent-detection = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = { OnCalendar = det.interval; Persistent = true; RandomizedDelaySec = "60"; };
+      };
+
+      environment.systemPackages = [
+        (pkgs.writeShellApplication {
+          name = "agent-detections";
+          runtimeInputs = with pkgs; [ jq coreutils gawk ];
+          text = ''
+            ${concatStringsSep "\n" (mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}") detectEnv)}
+            ${builtins.readFile ./agent-detections.sh}
+          '';
+        })
+      ];
+
+      # wheel users see the summary at login; the agents can't read it (it would teach them the rules)
+      environment.interactiveShellInit = ''
+        [ -r /run/agent-detection-summary ] && cat /run/agent-detection-summary
+      '';
+      programs.fish.interactiveShellInit = lib.mkIf config.programs.fish.enable ''
+        test -r /run/agent-detection-summary; and cat /run/agent-detection-summary
+      '';
     })
   ]);
 }

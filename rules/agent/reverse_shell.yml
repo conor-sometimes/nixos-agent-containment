@@ -1,5 +1,5 @@
 title: Contained agent spawns a reverse shell
-id: 7a1c0e2e-0b1a-4e8e-9a7e-reverseshell04
+id: 0c9b10de-25ea-4ad5-8e07-d33508386857
 status: experimental
 description: >
   A contained agent invoked a classic reverse-shell one-liner - bash's /dev/tcp, a Python/Perl/Ruby

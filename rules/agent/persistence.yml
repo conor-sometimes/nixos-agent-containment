@@ -1,5 +1,5 @@
 title: Contained agent establishes persistence
-id: 7a1c0e2e-0b1a-4e8e-9a7e-persistence05
+id: 27872ea4-de7d-486f-8813-02ca2926a255
 status: experimental
 description: >
   A contained agent tried to persist across sessions - installing a crontab, writing a systemd user

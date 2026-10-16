@@ -1,5 +1,5 @@
 title: Contained agent downloads from an IP literal into a temp dir
-id: 7a1c0e2e-0b1a-4e8e-9a7e-downloadtmpip02
+id: 0a128f0b-b920-46e1-bf78-ff3e4f63cddc
 status: experimental
 description: >
   A contained agent ran curl/wget against a bare IP address (not a hostname) writing into /tmp,

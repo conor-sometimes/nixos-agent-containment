@@ -1,6 +1,6 @@
 # End-to-end test: two VMs. `machine` runs the module with one agent, `bot`; `web` plays the
 # internet (an HTTP server answering "ok" for every name). Every wall is checked from the agent's
-# side, and every trace from root's side.
+# side, and every trace from root's side, ending with the Sigma detection pass over the trail.
 #
 #   nix-build tests/vm.nix          (needs KVM; uses <nixpkgs> unless pkgs is passed)
 { pkgs ? import <nixpkgs> { } }:
@@ -53,6 +53,7 @@ pkgs.testers.runNixOSTest {
         allowNixBuilds = true;
       };
       nixBuilders.wallWith = "bot";
+      detection.enable = true;
     };
   };
 
@@ -132,7 +133,12 @@ pkgs.testers.runNixOSTest {
     with subtest("sudo attempts and writes to the agent's ~/.ssh are recorded"):
         machine.succeed(bot("mkdir -p ~/.ssh; touch ~/.ssh/audit-test"))
         machine.wait_until_succeeds("ausearch -k agent-bot-ssh -i | grep -q audit-test")
-        machine.wait_until_succeeds("ausearch -k agent-sudo -i | grep -q ' uid=bot'")
+        # the agent's own sudo lands under its exec key: auditd tags an event with the first rule
+        # that matches, and the exec rules load before the sudo watch
+        machine.wait_until_succeeds("ausearch -k agent-bot-exec -i | grep -q 'uid=bot .*comm=sudo'")
+        # the watch covers everyone else
+        machine.succeed("runuser -u nobody -- /run/wrappers/bin/sudo -n true || true")
+        machine.wait_until_succeeds("ausearch -k agent-sudo -i | grep -q ' uid=nobody'")
 
     with subtest("agent-audit reports it all"):
         report = machine.succeed("agent-audit bot --since today")
@@ -140,5 +146,25 @@ pkgs.testers.runNixOSTest {
         assert "1.2.3.4" in report
         assert "forbidden.test" in report.split("refused:")[1]
         assert "none" not in report.split("bypass attempts)")[1].split("--")[0]
+
+    with subtest("detection: Laurel -> Sigma rules catch the curl-by-IP drill, wheel-only summary"):
+        machine.wait_until_succeeds("test -s /var/log/laurel/audit.log")
+        machine.succeed("systemctl start agent-detection.service")
+        alerts = machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl")
+        print(alerts)
+        # the drill from above: curl of an IP literal with -o /tmp/out, as the agent
+        assert "Contained agent downloads from an IP literal into a temp dir" in alerts
+        assert '"Agent":"bot"' in alerts
+        assert "Contained agent tries to escalate privileges" in alerts  # the sudo -n true above
+        report = machine.succeed("agent-detections")
+        print(report)
+        assert "IP literal" in report and "1.2.3.4" in report
+        machine.succeed("journalctl -t agent-detection | grep -q 'high: Contained agent downloads'")
+        machine.succeed("test \"$(stat -c %G:%a /run/agent-detection-summary)\" = wheel:640")
+        machine.fail(bot("cat /run/agent-detection-summary"))
+        # a second pass only reads what is new: no alert is counted twice
+        before = machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl | wc -l")
+        machine.succeed("systemctl start agent-detection.service")
+        assert machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl | wc -l") == before
   '';
 }

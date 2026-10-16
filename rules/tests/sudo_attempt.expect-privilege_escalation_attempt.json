@@ -1,0 +1,10 @@
+{
+  "_comment": "Sample normalised execve event that MUST fire privilege_escalation_attempt: the agent runs sudo through the setuid wrapper (the VM test does exactly this).",
+  "EventID": "1",
+  "Image": "/run/wrappers/wrappers.qeLpW5VWdp/sudo",
+  "CommandLine": "sudo -n true",
+  "User": "claude",
+  "CurrentDirectory": "/home/claude",
+  "ParentImage": "/run/current-system/sw/bin/bash",
+  "key": "agent-claude-exec"
+}
