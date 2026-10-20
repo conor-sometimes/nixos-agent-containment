@@ -64,6 +64,13 @@ in
     default = { };
     description = "Boxes by name; each gets a host user box-<name>, a container box-<name> and /srv/box/<name>/work.";
   };
+  options.services.podmanBox.addToAllowUsers = mkOption {
+    type = types.bool; default = false;
+    description = ''
+      Add every box user to sshd's AllowUsers. Only for hosts that already set AllowUsers (adding
+      to an unset list would lock everyone else out).
+    '';
+  };
 
   config = lib.mkIf (cfg.boxes != { }) {
     users.users = mapAttrs' (name: box: nameValuePair "box-${name}" {
@@ -73,6 +80,9 @@ in
       autoSubUidGidRange = true;
       openssh.authorizedKeys.keys = map (k: ''restrict,pty,command="${enter name}" ${k}'') box.sshKeys;
     }) cfg.boxes;
+
+    services.openssh.settings.AllowUsers =
+      lib.mkIf cfg.addToAllowUsers (mapAttrsToList (name: _: "box-${name}") cfg.boxes);
 
     systemd.tmpfiles.rules = mapAttrsToList (name: _: "d /srv/box/${name}/work 0700 box-${name} users -") cfg.boxes
       ++ [ "d /srv/box 0755 root root -" ];
