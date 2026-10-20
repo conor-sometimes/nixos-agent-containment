@@ -38,7 +38,10 @@ pkgs.testers.runNixOSTest {
     virtualisation = { memorySize = 4096; diskSize = 8192; cores = 2; };
   };
 
-  testScript = { nodes, ... }: let webIP = nodes.web.networking.primaryIPAddress; in ''
+  testScript = { nodes, ... }: let
+    webIP = nodes.web.networking.primaryIPAddress;
+    hostIP = nodes.machine.networking.primaryIPAddress;
+  in ''
     import shlex
 
     start_all()
@@ -73,6 +76,18 @@ pkgs.testers.runNixOSTest {
     with subtest("no capabilities, no-new-privileges"):
         assert box("grep ^CapEff /proc/self/status").split()[1] == "0000000000000000"
         assert box("grep ^NoNewPrivs /proc/self/status").split()[1] == "1"
+
+    with subtest("no new namespaces from inside (escape test 2026-10-20), and threads still work"):
+        box("printf '%s\\n' '#define _GNU_SOURCE' '#include <sched.h>' '#include <stdio.h>'"
+            " 'int main(void){ int u = unshare(CLONE_NEWUSER), n = unshare(CLONE_NEWNET);'"
+            " '  printf(\"%d %d\", u, n); return 0; }' > ns.c && cc -o ns ns.c")
+        assert box("./ns") == "-1 -1", "a box could create a user or network namespace"
+        box("printf '%s\\n' '#include <pthread.h>' 'void *f(void *a){ return a; }'"
+            " 'int main(void){ pthread_t t; return pthread_create(&t, 0, f, 0) || pthread_join(t, 0); }'"
+            " > th.c && cc -pthread -o th th.c && ./th")
+
+    with subtest("no host details in /etc/hosts (escape test 2026-10-20)"):
+        box_fails("grep -qs -e machine -e ${hostIP} /etc/hosts")
 
     with subtest("only the listed tools exist"):
         for tool in ["curl", "wget", "nix", "nix-build", "sudo", "su", "ssh", "podman", "python3", "nc"]:

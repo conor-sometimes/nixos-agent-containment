@@ -21,6 +21,22 @@ let
   cfg = config.services.podmanBox;
   podman = config.virtualisation.podman.package;
 
+  # Podman's default seccomp profile (see README.md) minus new namespaces: no unshare or setns,
+  # clone only without CLONE_NEW* flags (the mask is NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|
+  # NEWNET, as Docker uses it; x86_64/aarch64 argument order), clone3 answers ENOSYS so glibc falls
+  # back to clone for threads.
+  seccomp = let
+    base = lib.importJSON ./seccomp-podman-default.json;
+    gone = [ "clone" "clone3" "unshare" "setns" ];
+    rules = lib.filter (r: r.names != [ ]) (map (r: r // { names = lib.subtractLists gone r.names; }) base.syscalls);
+  in pkgs.writeText "box-seccomp.json" (builtins.toJSON (base // {
+    syscalls = rules ++ [
+      { names = [ "clone" ]; action = "SCMP_ACT_ALLOW";
+        args = [{ index = 0; value = 2114060288; valueTwo = 0; op = "SCMP_CMP_MASKED_EQ"; }]; }
+      { names = [ "clone3" ]; action = "SCMP_ACT_ERRNO"; errnoRet = 38; }
+    ];
+  }));
+
   image = name: box: pkgs.dockerTools.streamLayeredImage {
     name = "box-${name}";
     tag = "latest";
@@ -121,6 +137,8 @@ in
         "--tmpfs=/tmp:rw,mode=1777,size=${box.tmpSize}"   # writable scratch, capped (RAM-backed)
         "--cap-drop=all"
         "--security-opt=no-new-privileges"
+        "--security-opt=seccomp=${seccomp}"    # no new namespaces from inside the box
+        "--no-hosts"                           # no /etc/hosts naming the host or its LAN address
         "--userns=keep-id:uid=1000,gid=1000"   # the host user is uid 1000 inside, never root
         "--pids-limit=${toString box.pids}"
         "--memory=${box.memory}"
