@@ -51,11 +51,13 @@ pkgs.testers.runNixOSTest {
     ssh = f"ssh -i /root/decomp-key {opts} box-decomp@localhost"
     ssh_web = f"ssh -i /root/web-key {opts} box-web@localhost"
 
+    # every ssh gets its stdin from /dev/null: left on the driver's shell, ssh would read (and
+    # eat) the driver's next commands, and the test hangs
     def box(cmd, via=ssh):
-        return machine.succeed(f"{via} {shlex.quote(cmd)}").strip()
+        return machine.succeed(f"{via} {shlex.quote(cmd)} </dev/null").strip()
 
     def box_fails(cmd, via=ssh):
-        machine.fail(f"{via} {shlex.quote(cmd)}")
+        machine.fail(f"{via} {shlex.quote(cmd)} </dev/null")
 
     with subtest("ssh lands inside the box, as an unprivileged user"):
         assert box("cat /proc/sys/kernel/hostname") == "decomp"
@@ -97,7 +99,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the ssh key gets the box and nothing else"):
         # -W opens a forwarding channel straight away (an -L would only be refused on first use)
-        machine.fail(f"ssh -i /root/decomp-key {opts} -W 127.0.0.1:22 box-decomp@localhost")
+        machine.fail(f"ssh -i /root/decomp-key {opts} -W 127.0.0.1:22 box-decomp@localhost </dev/null")
 
     with subtest("the work itself: make, gcc, git push in over ssh"):
         box("printf 'int main(void){return 0;}\\n' > hello.c && printf 'hello: hello.c\\n\\tcc -O2 -o hello hello.c\\n' > Makefile && make && ./hello")
@@ -118,8 +120,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("boxes are walled from each other"):
         # each key opens only its own box
-        machine.fail(f"ssh -i /root/decomp-key {opts} box-web@localhost true")
-        machine.fail(f"ssh -i /root/web-key {opts} box-decomp@localhost true")
+        machine.fail(f"ssh -i /root/decomp-key {opts} box-web@localhost true </dev/null")
+        machine.fail(f"ssh -i /root/web-key {opts} box-decomp@localhost true </dev/null")
         # inside, the other box's files aren't there at all
         box_fails("ls /srv")
         box_fails("ls /srv", ssh_web)
