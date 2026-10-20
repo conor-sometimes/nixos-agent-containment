@@ -58,7 +58,7 @@ pkgs.testers.runNixOSTest {
         machine.fail(f"{via} {shlex.quote(cmd)}")
 
     with subtest("ssh lands inside the box, as an unprivileged user"):
-        assert box("hostname") == "decomp"
+        assert box("cat /proc/sys/kernel/hostname") == "decomp"
         assert box("id -u") == "1000"
         assert box("pwd") == "/work"
 
@@ -111,7 +111,7 @@ pkgs.testers.runNixOSTest {
         assert "from-host" in box("git -C /work/repo.git log --oneline main")
 
     with subtest("each box has its own tools"):
-        assert box("hostname", ssh_web) == "web"
+        assert box("cat /proc/sys/kernel/hostname", ssh_web) == "web"
         box("python3 -c 'print(1)'", ssh_web)
         for tool in ["gcc", "make", "git"]:
             box_fails(f"command -v {tool}", ssh_web)
