@@ -108,6 +108,12 @@ in
       ];
     }) cfg.boxes;
 
+    # Images come from Nix, so every upgrade that changes a box's tools loads a new one into that
+    # box user's own podman storage (outside nix-collect-garbage and podman's root autoPrune).
+    systemd.services = mapAttrs' (name: _: nameValuePair "podman-box-${name}" {
+      postStart = "${podman}/bin/podman image prune -f || true";
+    }) cfg.boxes;
+
     assertions = [{
       assertion = let uids = mapAttrsToList (_: b: b.uid) cfg.boxes; in lib.length uids == lib.length (lib.unique uids);
       message = "services.podmanBox.boxes: every box needs its own uid";
