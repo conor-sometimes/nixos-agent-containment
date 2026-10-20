@@ -21,7 +21,8 @@ pkgs.testers.runNixOSTest {
     };
   };
 
-  nodes.machine = { pkgs, ... }: {
+  nodes.machine = { pkgs, nodes, ... }: {
+    networking.hosts.${nodes.web.networking.primaryIPAddress} = [ "allowed.test" "api.allowed.test" "forbidden.test" ];
     imports = [ ../../module.nix ./box.nix ];
     services.agentContainment.detection.enable = true;
     services.podmanBox.boxes = {
@@ -30,6 +31,13 @@ pkgs.testers.runNixOSTest {
         uid = 1202;
         sshKeys = [ sshKeys.snakeOilEd25519PublicKey ];
         tools = [ pkgs.python3 ];
+      };
+      # online: one allowed domain, through its proxy; same key as web (keys aren't the point here)
+      net = {
+        uid = 1203;
+        sshKeys = [ sshKeys.snakeOilEd25519PublicKey ];
+        tools = [ pkgs.curl ];
+        egress.allowedDomains = [ "allowed.test" ];
       };
     };
     services.openssh.enable = true;
@@ -159,6 +167,31 @@ pkgs.testers.runNixOSTest {
         print(machine.succeed("agent-audit box-decomp --since today"))
         # and the box can't see any of it
         box_fails("ls /var/log/audit /var/log/laurel /var/lib/agent-detection")
+
+    with subtest("an online box reaches its allowed domains through its proxy, and nothing else"):
+        ssh_net = f"ssh -i /root/web-key {opts} box-net@localhost"
+        def code(url, extra=""):
+            # || true: a refused connection is an answer here (000), not a test failure
+            return box(f"curl -s -m 10 -o /dev/null -w '%{{http_code}}' {extra} {url} || true", ssh_net)
+        assert code("http://allowed.test/") == "200"
+        assert code("http://api.allowed.test/") == "200"
+        assert code("http://forbidden.test/") == "403"
+        assert code("http://${webIP}/") == "403"            # an IP literal is not a domain
+        # around the proxy: leaves as box-net's uid and the containment's wall drops it
+        assert code("http://${webIP}/", "--noproxy '*'") == "000"
+        machine.wait_until_succeeds("journalctl -k | grep -q 'agent-box-net-out-drop: .*UID=1203'")
+        # the one forwarded port is its own proxy; the host's other loopback listeners (sshd here,
+        # another agent's proxy on a real host) aren't reachable, by forward or by gateway
+        box_fails("timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/22'", ssh_net)
+        gw = box("awk '$2 == \"00000000\" { print $3 }' /proc/net/route | head -1", ssh_net)
+        print("gateway (hex):", gw)
+        if gw:
+            ip = ".".join(str(int(gw[i:i+2], 16)) for i in (6, 4, 2, 0))
+            box_fails(f"timeout 5 bash -c 'exec 3<>/dev/tcp/{ip}/22'", ssh_net)
+        # and the proxy log names the box
+        machine.succeed("journalctl -u agent-proxy-box-net | grep -q forbidden.test")
+        # an offline box is still offline
+        assert box("awk -F: 'NR > 2 { gsub(/ /, \"\", $1); print $1 }' /proc/net/dev") == "lo"
 
     with subtest("limits are live"):
         print(box("cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max"))

@@ -63,6 +63,10 @@ let
     exec ${podman}/bin/podman exec -i $tty -w /work box-${name} bash -l
   '';
 
+  proxyPort = box: 20000 + box.uid;
+  online = box: box.egress.allowedDomains != [ ];
+  proxy = box: "http://127.0.0.1:${toString (proxyPort box)}";
+
   boxOptions = {
     options = {
       uid = mkOption { type = types.int; description = "Host uid of the box's user, box-<name> (fixed, unique per box)."; };
@@ -78,6 +82,15 @@ let
       memory = mkOption { type = types.str; default = "4g"; };
       cpus = mkOption { type = types.str; default = "2"; };
       pids = mkOption { type = types.int; default = 2048; };
+      egress.allowedDomains = mkOption {
+        type = types.listOf types.str; default = [ ];
+        example = [ "pypi.org" "files.pythonhosted.org" ];
+        description = ''
+          Domains the box may reach (each also allows its subdomains), through its host user's
+          logging proxy. Empty: no network at all. Needs `contain`, whose wall is what stops
+          everything else.
+        '';
+      };
       contain = mkOption {
         type = types.bool; default = true;
         description = "Make box-<name> a contained agent (module.nix): audit trail, detection rules, egress wall on its host user.";
@@ -114,7 +127,8 @@ in
     # and a proxy port of its own (the module refuses two agents on one).
     services.agentContainment.agents = mapAttrs' (name: box: nameValuePair "box-${name}" {
       inherit (box) uid;
-      egress.proxyPort = 20000 + box.uid;
+      egress.proxyPort = proxyPort box;
+      egress.allowedDomains = box.egress.allowedDomains;
     }) (lib.filterAttrs (_: box: box.contain) cfg.boxes);
 
     services.openssh.settings.AllowUsers =
@@ -130,7 +144,19 @@ in
       image = "localhost/box-${name}:latest";
       podman.user = "box-${name}";
       hostname = name;
-      networks = [ "none" ];
+      # Offline: no network at all. Online: pasta (user-mode, so its traffic leaves as the box
+      # user's uid, behind the containment's wall) with exactly one way out: the box's loopback port
+      # forwarded to its proxy on the host. Nothing else forwarded either way (-T's default, auto,
+      # would bring every host loopback listener in, other agents' proxies included), and no
+      # gateway address that maps to the host's loopback.
+      networks = if online box then [
+        "pasta:-t,none,-u,none,-U,none,-T,${toString (proxyPort box)},--no-map-gw"
+      ] else [ "none" ];
+      environment = lib.optionalAttrs (online box) {
+        http_proxy = proxy box; https_proxy = proxy box; HTTP_PROXY = proxy box; HTTPS_PROXY = proxy box;
+        no_proxy = "localhost,127.0.0.1"; NO_PROXY = "localhost,127.0.0.1";
+        NODE_USE_ENV_PROXY = "1";   # Node's fetch ignores the proxy variables without it
+      };
       volumes = [ "/srv/box/${name}/work:/work:rw" ];
       extraOptions = [
         "--read-only"                          # root filesystem read-only
@@ -152,7 +178,10 @@ in
       postStart = "${podman}/bin/podman image prune -f || true";
     }) cfg.boxes;
 
-    assertions = [{
+    assertions = mapAttrsToList (name: box: {
+      assertion = online box -> box.contain;
+      message = "services.podmanBox.boxes.${name}: egress.allowedDomains needs contain (the wall that stops everything else)";
+    }) cfg.boxes ++ [{
       assertion = let uids = mapAttrsToList (_: b: b.uid) cfg.boxes; in lib.length uids == lib.length (lib.unique uids);
       message = "services.podmanBox.boxes: every box needs its own uid";
     }];
