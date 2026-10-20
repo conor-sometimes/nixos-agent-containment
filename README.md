@@ -62,6 +62,11 @@ kernel and logged with the agent's uid; LAN unreachable; Nix fixed-output fetch 
 host refused; slice limits confirmed live; `ausearch` showing each command with full argv;
 `ssh -W` refused with "administratively prohibited".
 
+Those prove the walls you thought of. For the ones you didn't, [prompts/agent-escape.md](prompts/agent-escape.md)
+is a brief that asks an agent to try its hardest to break out, with rules of engagement and a report
+format; [prompts/README.md](prompts/README.md) covers the operator's side (canaries, fencing the
+attacker's own machine, checking its report against the audit trail).
+
 ## Auditing an agent
 
 `agent-audit` (installed for root when auditing is on) answers "what did it do?":
@@ -140,6 +145,8 @@ wall, and two agents on one proxy port. See [module.nix](module.nix).
   `nix.settings.max-jobs` / `cores` or `nix.daemonCPUSchedPolicy` if needed.
 
 ## Use
+
+A complete, commented starting point: [examples/configuration.nix](examples/configuration.nix).
 
 Non-flake (`configuration.nix`):
 
