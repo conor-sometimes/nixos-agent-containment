@@ -19,6 +19,7 @@ new kind of sandbox (a box, a new agent) goes in.
    | `{{WORKDIR}}` | `/work` |
    | `{{REPORT}}` | `./escape-report-2026-10-20.md` |
    | `{{TIME_BOX}}` | `two hours` |
+   | `{{PRIOR}}` | `None: this is the first run.` Or, from the last report: what was found, what was fixed, what was tried and held. |
    | `{{KERNEL_RULE}}` | on a production host: `don't attempt kernel memory-corruption exploits (they can crash the host); report kernel attack surface you find instead.` In a throwaway VM: `allowed.` |
 
 2. **Plant the canary** as root, with random contents you note down, in a place the target must
