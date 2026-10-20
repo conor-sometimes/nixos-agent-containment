@@ -228,6 +228,12 @@ in
         (attrNames (filterAttrs (_: a: a.ssh.addToAllowUsers) agents));
 
       nix.settings.allowed-users = attrNames (filterAttrs (_: a: a.allowNixBuilds) agents);
+
+      # With the nixbld users behind a wall, a download only works with the wall's proxy, which only
+      # the daemon has. Root's nix (sudo nixos-rebuild, the nightly upgrade) builds in-process by
+      # default, without it, and its downloads hit the wall. So every client uses the daemon, and
+      # the daemon itself (which reads the same setting) keeps the local store.
+      nix.settings.store = mkIf (cfg.nixBuilders.wallWith != null) "daemon";
     }
 
     (mkIf (walled != { }) {
@@ -244,6 +250,7 @@ in
       }) walled // lib.optionalAttrs (cfg.nixBuilders.wallWith != null) {
         nix-daemon.environment = let a = agents.${cfg.nixBuilders.wallWith}; in {
           http_proxy = proxyUrl a; https_proxy = proxyUrl a; no_proxy = "localhost,127.0.0.1";
+          NIX_CONFIG = "store = local";   # over nix.conf's store = daemon, or it forwards to itself
         };
       } // lib.mapAttrs' (name: a: lib.nameValuePair "user@${toString a.uid}" {
         # The agent's systemd user services get the proxy too (otherwise they'd fail closed).

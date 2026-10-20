@@ -42,6 +42,7 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [ pkgs.curl ];
     environment.etc."fod-allowed.nix".source = fod "fod-allowed" "http://allowed.test/";
     environment.etc."fod-forbidden.nix".source = fod "fod-forbidden" "http://forbidden.test/";
+    environment.etc."fod-root.nix".source = fod "fod-root" "http://allowed.test/";
     nix.settings.sandbox = false;  # store paths above are referenced without context
     nix.settings.substituters = lib.mkForce [ ];  # no internet in the test
 
@@ -125,6 +126,11 @@ pkgs.testers.runNixOSTest {
     with subtest("Nix builds: fixed-output fetches go through the same wall"):
         machine.succeed(bot("nix-build /etc/fod-allowed.nix --no-out-link"))
         machine.fail(bot("nix-build /etc/fod-forbidden.nix --no-out-link"))
+
+    with subtest("Nix builds started by root (sudo nixos-rebuild) download through the wall too"):
+        # root talks to the daemon (store = daemon), so its downloads get the daemon's proxy; before,
+        # root built in-process without it and nixbld hit the wall (hokkaido, 2026-10-20)
+        machine.succeed("nix-build /etc/fod-root.nix --no-out-link")
 
     with subtest("the audit trail has the agent's commands, with arguments"):
         machine.wait_until_succeeds("ausearch -k agent-bot-exec -i | grep -q 'a0=curl.*1\\.2\\.3\\.4'")
