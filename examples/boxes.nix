@@ -5,10 +5,18 @@
 { pkgs, ... }:
 
 {
-  imports = [ "${builtins.fetchGit {
-    url = "https://github.com/conor-sometimes/nixos-agent-containment";
-    rev = "<commit>";
-  }}/experiments/podman-box/box.nix" ];
+  imports = let
+    containment = builtins.fetchGit {
+      url = "https://github.com/conor-sometimes/nixos-agent-containment";
+      rev = "<commit>";
+    };
+  in [
+    "${containment}/module.nix"                      # each box user is a contained agent: audit + Sigma
+    "${containment}/experiments/podman-box/box.nix"
+  ];
+
+  # Everything run in a box lands in the host's audit trail; this checks it against the Sigma rules.
+  services.agentContainment.detection.enable = true;
 
   services.podmanBox.boxes = {
     # C builds: bash, coreutils and these, nothing else.

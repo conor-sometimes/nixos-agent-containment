@@ -22,7 +22,8 @@ pkgs.testers.runNixOSTest {
   };
 
   nodes.machine = { pkgs, ... }: {
-    imports = [ ./box.nix ];
+    imports = [ ../../module.nix ./box.nix ];
+    services.agentContainment.detection.enable = true;
     services.podmanBox.boxes = {
       decomp = { uid = 1201; sshKeys = [ sshKeys.snakeOilPublicKey ]; };
       web = {
@@ -129,6 +130,20 @@ pkgs.testers.runNixOSTest {
         box("echo secret > /work/mine")
         machine.fail("runuser -u box-web -- cat /srv/box/decomp/work/mine")
         machine.fail("runuser -u box-web -- ls /srv/box/decomp/work")
+
+    with subtest("logging: what runs in a box is in the host's audit trail, and the rules see it"):
+        box("echo audit-marker-$((6*7))")
+        machine.wait_until_succeeds("ausearch -k agent-box-decomp-exec -i | grep -q 'audit-marker'")
+        # the reverse-shell drill from above, run in the box, must come out of the Sigma pass
+        machine.wait_until_succeeds("test -s /var/log/laurel/audit.log")
+        machine.succeed("systemctl start agent-detection.service")
+        alerts = machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl")
+        assert "Contained agent spawns a reverse shell" in alerts
+        assert '"Agent":"box-decomp"' in alerts
+        print(machine.succeed("agent-detections"))
+        print(machine.succeed("agent-audit box-decomp --since today"))
+        # and the box can't see any of it
+        box_fails("ls /var/log/audit /var/log/laurel /var/lib/agent-detection")
 
     with subtest("limits are live"):
         print(box("cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max"))

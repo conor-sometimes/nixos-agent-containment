@@ -8,6 +8,12 @@
 #   services.podmanBox.boxes.decomp = { uid = 1201; sshKeys = [ "ssh-ed25519 AAAA... claude@mac" ]; };
 #
 # Then from the agent's machine: `ssh box-decomp@host` (a shell in the box) or `ssh box-decomp@host make`.
+#
+# Logging: with `contain` (the default) each box's host user is also a contained agent, so this
+# needs the repo's module.nix imported too. Its uid is what the kernel sees for everything run in
+# the box (uid 1000 inside = the box user outside), so auditd records every command run in the box,
+# Laurel/Sigma check them (`agent-detections`), `agent-audit box-<name>` reports them, and nothing in
+# the box can reach any of it.
 { config, lib, pkgs, ... }:
 
 let
@@ -56,6 +62,10 @@ let
       memory = mkOption { type = types.str; default = "4g"; };
       cpus = mkOption { type = types.str; default = "2"; };
       pids = mkOption { type = types.int; default = 2048; };
+      contain = mkOption {
+        type = types.bool; default = true;
+        description = "Make box-<name> a contained agent (module.nix): audit trail, detection rules, egress wall on its host user.";
+      };
       tmpSize = mkOption { type = types.str; default = "1g"; description = "Size cap of the box's /tmp (a tmpfs, so it counts against memory)."; };
     };
   };
@@ -82,6 +92,14 @@ in
       autoSubUidGidRange = true;
       openssh.authorizedKeys.keys = map (k: ''restrict,pty,command="${enter name}" ${k}'') box.sshKeys;
     }) cfg.boxes;
+
+    # Logging and the host-side walls come from the containment: the box user as an agent with no
+    # keys of its own there (the box's pinned keys above are the only way in), no allowed domains,
+    # and a proxy port of its own (the module refuses two agents on one).
+    services.agentContainment.agents = mapAttrs' (name: box: nameValuePair "box-${name}" {
+      inherit (box) uid;
+      egress.proxyPort = 20000 + box.uid;
+    }) (lib.filterAttrs (_: box: box.contain) cfg.boxes);
 
     services.openssh.settings.AllowUsers =
       lib.mkIf cfg.addToAllowUsers (mapAttrsToList (name: _: "box-${name}") cfg.boxes);
