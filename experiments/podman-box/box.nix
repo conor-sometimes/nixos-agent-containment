@@ -1,22 +1,24 @@
-# Trial: one rootless podman "box" for an agent, every step in Nix. The image holds only the tools
-# listed below (built from Nix, no distro, no registry); the container runs under its own
-# unprivileged host user with no network, a read-only root, no capabilities and no-new-privileges;
-# the only way in is an ssh key pinned to `podman exec` into it. /work is the one writable place.
+# Trial: rootless podman "boxes" for an agent, every step in Nix. Each box is one job's world: an
+# image holding only that job's tools (built from Nix, no distro, no registry), run under its own
+# unprivileged host user with no network, a read-only root, no capabilities and no-new-privileges.
+# The only way in is an ssh key pinned to `podman exec` into that box; its /work is the one
+# writable place. One sshd for all of them: a box is picked by user name, not by port.
 #
 #   imports = [ ./experiments/podman-box/box.nix ];
-#   services.podmanBox.sshKeys = [ "ssh-ed25519 AAAA... claude@mac" ];
+#   services.podmanBox.boxes.decomp = { uid = 1201; sshKeys = [ "ssh-ed25519 AAAA... claude@mac" ]; };
 #
-# Then from the agent's machine: `ssh box@host` (a shell in the box) or `ssh box@host make`.
+# Then from the agent's machine: `ssh box-decomp@host` (a shell in the box) or `ssh box-decomp@host make`.
 { config, lib, pkgs, ... }:
 
 let
+  inherit (lib) mkOption types mapAttrs' nameValuePair mapAttrsToList;
   cfg = config.services.podmanBox;
   podman = config.virtualisation.podman.package;
 
-  image = pkgs.dockerTools.streamLayeredImage {
-    name = "box";
+  image = name: box: pkgs.dockerTools.streamLayeredImage {
+    name = "box-${name}";
     tag = "latest";
-    contents = cfg.tools ++ [
+    contents = box.tools ++ [
       (pkgs.writeTextDir "etc/passwd" "box:x:1000:1000:box:/work:/bin/bash\n")
       (pkgs.writeTextDir "etc/group" "box:x:1000:\n")
     ];
@@ -30,59 +32,74 @@ let
   };
 
   # The key's forced command: whatever the client asked for runs inside the box, never on the host.
-  enter = pkgs.writeShellScript "box-enter" ''
+  enter = name: pkgs.writeShellScript "box-${name}-enter" ''
     tty=; [ -t 0 ] && tty=-t
     if [ -n "''${SSH_ORIGINAL_COMMAND:-}" ]; then
-      exec ${podman}/bin/podman exec -i $tty -w /work box bash -c "$SSH_ORIGINAL_COMMAND"
+      exec ${podman}/bin/podman exec -i $tty -w /work box-${name} bash -c "$SSH_ORIGINAL_COMMAND"
     fi
-    exec ${podman}/bin/podman exec -i $tty -w /work box bash -l
+    exec ${podman}/bin/podman exec -i $tty -w /work box-${name} bash -l
   '';
+
+  boxOptions = {
+    options = {
+      uid = mkOption { type = types.int; description = "Host uid of the box's user, box-<name> (fixed, unique per box)."; };
+      sshKeys = mkOption {
+        type = types.listOf types.str; default = [ ];
+        description = "Public keys that may enter this box (each is pinned to it, nothing else).";
+      };
+      tools = mkOption {
+        type = types.listOf types.package;
+        default = with pkgs; [ bashInteractive coreutils findutils gnugrep gnused gawk diffutils gnumake gcc git less ];
+        description = "Everything that exists inside the box.";
+      };
+      memory = mkOption { type = types.str; default = "4g"; };
+      cpus = mkOption { type = types.str; default = "2"; };
+      pids = mkOption { type = types.int; default = 2048; };
+    };
+  };
 in
 {
-  options.services.podmanBox = {
-    sshKeys = lib.mkOption {
-      type = lib.types.listOf lib.types.str; default = [ ];
-      description = "Public keys that may enter the box (each is pinned to the box, nothing else).";
-    };
-    tools = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = with pkgs; [ bashInteractive coreutils findutils gnugrep gnused gawk diffutils gnumake gcc git less ];
-      description = "Everything that exists inside the box.";
-    };
-    uid = lib.mkOption { type = lib.types.int; default = 1200; description = "Host uid of the box user."; };
-    memory = lib.mkOption { type = lib.types.str; default = "4g"; };
-    cpus = lib.mkOption { type = lib.types.str; default = "2"; };
+  options.services.podmanBox.boxes = mkOption {
+    type = types.attrsOf (types.submodule boxOptions);
+    default = { };
+    description = "Boxes by name; each gets a host user box-<name>, a container box-<name> and /srv/box/<name>/work.";
   };
 
-  config = {
-    users.users.box = {
+  config = lib.mkIf (cfg.boxes != { }) {
+    users.users = mapAttrs' (name: box: nameValuePair "box-${name}" {
       isNormalUser = true;
-      inherit (cfg) uid;
+      inherit (box) uid;
       linger = true;                 # rootless containers need the user's manager running
       autoSubUidGidRange = true;
-      openssh.authorizedKeys.keys = map (k: ''restrict,pty,command="${enter}" ${k}'') cfg.sshKeys;
-    };
+      openssh.authorizedKeys.keys = map (k: ''restrict,pty,command="${enter name}" ${k}'') box.sshKeys;
+    }) cfg.boxes;
 
-    systemd.tmpfiles.rules = [ "d /srv/box/work 0700 box users -" ];
+    systemd.tmpfiles.rules = mapAttrsToList (name: _: "d /srv/box/${name}/work 0700 box-${name} users -") cfg.boxes
+      ++ [ "d /srv/box 0755 root root -" ];
 
     virtualisation.podman.enable = true;
     virtualisation.oci-containers.backend = "podman";
-    virtualisation.oci-containers.containers.box = {
-      imageStream = image;
-      image = "localhost/box:latest";
-      podman.user = "box";
-      hostname = "box";
+    virtualisation.oci-containers.containers = mapAttrs' (name: box: nameValuePair "box-${name}" {
+      imageStream = image name box;
+      image = "localhost/box-${name}:latest";
+      podman.user = "box-${name}";
+      hostname = name;
       networks = [ "none" ];
-      volumes = [ "/srv/box/work:/work:rw" ];
+      volumes = [ "/srv/box/${name}/work:/work:rw" ];
       extraOptions = [
         "--read-only"                          # root filesystem read-only (/tmp, /run: tmpfs)
         "--cap-drop=all"
         "--security-opt=no-new-privileges"
         "--userns=keep-id:uid=1000,gid=1000"   # the host user is uid 1000 inside, never root
-        "--pids-limit=2048"
-        "--memory=${cfg.memory}"
-        "--cpus=${cfg.cpus}"
+        "--pids-limit=${toString box.pids}"
+        "--memory=${box.memory}"
+        "--cpus=${box.cpus}"
       ];
-    };
+    }) cfg.boxes;
+
+    assertions = [{
+      assertion = let uids = mapAttrsToList (_: b: b.uid) cfg.boxes; in lib.length uids == lib.length (lib.unique uids);
+      message = "services.podmanBox.boxes: every box needs its own uid";
+    }];
   };
 }

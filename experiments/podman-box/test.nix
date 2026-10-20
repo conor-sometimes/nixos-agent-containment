@@ -1,6 +1,8 @@
-# The box under rogue drills: two VMs, `machine` runs the box, `web` plays the internet. Everything
-# the agent tries goes in the way it would for real (ssh with the box's key), and every forbidden
-# thing must fail while the work itself (make, gcc, git push in) still succeeds.
+# The boxes under rogue drills: two VMs, `machine` runs two boxes (`decomp`: make/gcc/git, `web`:
+# python3 and little else), `web` plays the internet. Everything the agent tries goes in the way it
+# would for real (ssh with that box's key), and every forbidden thing must fail while the work
+# itself (make, gcc, git push in) still succeeds. Then the boxes against each other: each key opens
+# only its own box, and neither box (nor its host user) can reach the other's files.
 #
 #   nix-build experiments/podman-box/test.nix      (needs KVM; uses <nixpkgs> unless pkgs is passed)
 { pkgs ? import <nixpkgs> { } }:
@@ -19,9 +21,16 @@ pkgs.testers.runNixOSTest {
     };
   };
 
-  nodes.machine = {
+  nodes.machine = { pkgs, ... }: {
     imports = [ ./box.nix ];
-    services.podmanBox.sshKeys = [ sshKeys.snakeOilPublicKey ];
+    services.podmanBox.boxes = {
+      decomp = { uid = 1201; sshKeys = [ sshKeys.snakeOilPublicKey ]; };
+      web = {
+        uid = 1202;
+        sshKeys = [ sshKeys.snakeOilEd25519PublicKey ];
+        tools = with pkgs; [ bashInteractive coreutils python3 ];
+      };
+    };
     services.openssh.enable = true;
     # on the host, so "the box can't see the host's store" is a real check
     environment.systemPackages = [ pkgs.curl pkgs.git ];
@@ -34,23 +43,28 @@ pkgs.testers.runNixOSTest {
     start_all()
     web.wait_for_open_port(80)
     machine.wait_for_unit("sshd.service")
-    machine.wait_for_unit("podman-box.service")
-    machine.succeed("install -m 600 ${sshKeys.snakeOilPrivateKey} /root/key")
-    ssh = "ssh -i /root/key -o StrictHostKeyChecking=no -o BatchMode=yes box@localhost"
+    machine.wait_for_unit("podman-box-decomp.service")
+    machine.wait_for_unit("podman-box-web.service")
+    machine.succeed("install -m 600 ${sshKeys.snakeOilPrivateKey} /root/decomp-key")
+    machine.succeed("install -m 600 ${sshKeys.snakeOilEd25519PrivateKey} /root/web-key")
+    opts = "-o StrictHostKeyChecking=no -o BatchMode=yes -o IdentitiesOnly=yes"
+    ssh = f"ssh -i /root/decomp-key {opts} box-decomp@localhost"
+    ssh_web = f"ssh -i /root/web-key {opts} box-web@localhost"
 
-    def box(cmd):
-        return machine.succeed(f"{ssh} {shlex.quote(cmd)}").strip()
+    def box(cmd, via=ssh):
+        return machine.succeed(f"{via} {shlex.quote(cmd)}").strip()
 
-    def box_fails(cmd):
-        machine.fail(f"{ssh} {shlex.quote(cmd)}")
+    def box_fails(cmd, via=ssh):
+        machine.fail(f"{via} {shlex.quote(cmd)}")
 
     with subtest("ssh lands inside the box, as an unprivileged user"):
-        assert box("hostname") == "box"
+        assert box("hostname") == "decomp"
         assert box("id -u") == "1000"
         assert box("pwd") == "/work"
 
-    with subtest("rootless: the container runs under the box user, not root"):
-        machine.succeed("pgrep -u box -x conmon")
+    with subtest("rootless: each box's container runs under its own host user, not root"):
+        machine.succeed("pgrep -u box-decomp -x conmon")
+        machine.succeed("pgrep -u box-web -x conmon")
         machine.fail("pgrep -u root -x conmon")
 
     with subtest("no capabilities, no-new-privileges"):
@@ -60,9 +74,10 @@ pkgs.testers.runNixOSTest {
     with subtest("only the listed tools exist"):
         for tool in ["curl", "wget", "nix", "nix-build", "sudo", "su", "ssh", "podman", "python3", "nc"]:
             box_fails(f"command -v {tool}")
-        # the host has curl in its store; the box's store is only its own closure
-        machine.succeed("ls /nix/store | grep -q -- -curl-")
-        box_fails("ls /nix/store | grep -q -- -curl-")
+        # the host has a curl binary in its store; the box's store is only its own closure (which
+        # does hold libcurl, via git, but no curl program)
+        machine.succeed("ls /nix/store/*/bin/curl")
+        box_fails("ls /nix/store/*/bin/curl")
         box_fails("test -e /run/current-system")
 
     with subtest("no network: no interfaces but lo, nothing reachable"):
@@ -75,14 +90,14 @@ pkgs.testers.runNixOSTest {
         box("echo ok > /work/probe && echo ok > /tmp/probe")
         for path in ["/probe", "/etc/probe", "/bin/probe", "/nix/store/probe"]:
             box_fails(f"echo x > {path}")
-        machine.succeed("test -f /srv/box/work/probe")
+        machine.succeed("test -f /srv/box/decomp/work/probe")
 
     with subtest("can't see the host's processes"):
         assert int(box("ls -d /proc/[0-9]* | wc -l")) < 20
 
     with subtest("the ssh key gets the box and nothing else"):
         # -W opens a forwarding channel straight away (an -L would only be refused on first use)
-        machine.fail("ssh -i /root/key -o StrictHostKeyChecking=no -o BatchMode=yes -W 127.0.0.1:22 box@localhost")
+        machine.fail(f"ssh -i /root/decomp-key {opts} -W 127.0.0.1:22 box-decomp@localhost")
 
     with subtest("the work itself: make, gcc, git push in over ssh"):
         box("printf 'int main(void){return 0;}\\n' > hello.c && printf 'hello: hello.c\\n\\tcc -O2 -o hello hello.c\\n' > Makefile && make && ./hello")
@@ -90,10 +105,28 @@ pkgs.testers.runNixOSTest {
         machine.succeed(
             "git init -q /root/src && cd /root/src"
             " && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m from-host"
-            f" && GIT_SSH_COMMAND='ssh -i /root/key -o StrictHostKeyChecking=no -o BatchMode=yes'"
-            " git push -q box@localhost:/work/repo.git HEAD:main"
+            f" && GIT_SSH_COMMAND='ssh -i /root/decomp-key {opts}'"
+            " git push -q box-decomp@localhost:/work/repo.git HEAD:main"
         )
         assert "from-host" in box("git -C /work/repo.git log --oneline main")
+
+    with subtest("each box has its own tools"):
+        assert box("hostname", ssh_web) == "web"
+        box("python3 -c 'print(1)'", ssh_web)
+        for tool in ["gcc", "make", "git"]:
+            box_fails(f"command -v {tool}", ssh_web)
+
+    with subtest("boxes are walled from each other"):
+        # each key opens only its own box
+        machine.fail(f"ssh -i /root/decomp-key {opts} box-web@localhost true")
+        machine.fail(f"ssh -i /root/web-key {opts} box-decomp@localhost true")
+        # inside, the other box's files aren't there at all
+        box_fails("ls /srv")
+        box_fails("ls /srv", ssh_web)
+        # and if a box ever got out to its host user, the other's work is still 0700
+        box("echo secret > /work/mine")
+        machine.fail("runuser -u box-web -- cat /srv/box/decomp/work/mine")
+        machine.fail("runuser -u box-web -- ls /srv/box/decomp/work")
 
     with subtest("limits are live"):
         print(box("cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max"))
