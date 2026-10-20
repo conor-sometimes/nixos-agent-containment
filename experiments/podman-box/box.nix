@@ -18,7 +18,8 @@ let
   image = name: box: pkgs.dockerTools.streamLayeredImage {
     name = "box-${name}";
     tag = "latest";
-    contents = box.tools ++ [
+    # bash and coreutils always: the way in is `bash -c` and the box idles on `sleep`
+    contents = [ pkgs.bashInteractive pkgs.coreutils ] ++ box.tools ++ [
       (pkgs.writeTextDir "etc/passwd" "box:x:1000:1000:box:/work:/bin/bash\n")
       (pkgs.writeTextDir "etc/group" "box:x:1000:\n")
     ];
@@ -49,8 +50,8 @@ let
       };
       tools = mkOption {
         type = types.listOf types.package;
-        default = with pkgs; [ bashInteractive coreutils findutils gnugrep gnused gawk diffutils gnumake gcc git less ];
-        description = "Everything that exists inside the box.";
+        default = with pkgs; [ findutils gnugrep gnused gawk diffutils gnumake gcc git less ];
+        description = "Everything that exists inside the box, besides bash and coreutils (always there).";
       };
       memory = mkOption { type = types.str; default = "4g"; };
       cpus = mkOption { type = types.str; default = "2"; };

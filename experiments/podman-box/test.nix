@@ -28,7 +28,7 @@ pkgs.testers.runNixOSTest {
       web = {
         uid = 1202;
         sshKeys = [ sshKeys.snakeOilEd25519PublicKey ];
-        tools = with pkgs; [ bashInteractive coreutils python3 ];
+        tools = [ pkgs.python3 ];
       };
     };
     services.openssh.enable = true;
