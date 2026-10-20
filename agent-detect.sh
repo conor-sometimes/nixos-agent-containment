@@ -55,8 +55,15 @@ if [ "$n" -gt 0 ]; then
   while IFS= read -r t; do [ -n "$t" ] && filter+=("$t"); done <<< "${EXCLUDE:-}"
   [ "${#filter[@]}" -gt 0 ] && args+=(--rulefilter "${filter[@]}")
   rm -f work/alerts.json
-  # Zircolite writes its own log into the working directory
-  (cd work && zircolite "${args[@]}" >/dev/null)
+  # Zircolite writes its own log into the working directory. It also skips a rule file it can't
+  # convert with nothing but a line of output, which drops that whole ruleset (one stray non-UTF-8
+  # file did, 2026-10-20): fail the pass instead, so its events are checked again next time.
+  (cd work && zircolite "${args[@]}" > zircolite.out 2>&1) || { cat work/zircolite.out >&2; exit 1; }
+  cat work/zircolite.out >&2
+  if grep -q "Cannot convert" work/zircolite.out; then
+    echo "agent-detect: a ruleset did not load (see above); failing the pass" >&2
+    exit 1
+  fi
 
   if [ -s work/alerts.json ]; then
     jq -c --arg run "$run" '.[] | {run: $run, rule: .title, id, level: .rule_level} as $r
