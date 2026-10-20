@@ -56,6 +56,7 @@ let
       memory = mkOption { type = types.str; default = "4g"; };
       cpus = mkOption { type = types.str; default = "2"; };
       pids = mkOption { type = types.int; default = 2048; };
+      tmpSize = mkOption { type = types.str; default = "1g"; description = "Size cap of the box's /tmp (a tmpfs, so it counts against memory)."; };
     };
   };
 in
@@ -98,7 +99,8 @@ in
       networks = [ "none" ];
       volumes = [ "/srv/box/${name}/work:/work:rw" ];
       extraOptions = [
-        "--read-only"                          # root filesystem read-only (/tmp, /run: tmpfs)
+        "--read-only"                          # root filesystem read-only
+        "--tmpfs=/tmp:rw,mode=1777,size=${box.tmpSize}"   # writable scratch, capped (RAM-backed)
         "--cap-drop=all"
         "--security-opt=no-new-privileges"
         "--userns=keep-id:uid=1000,gid=1000"   # the host user is uid 1000 inside, never root
