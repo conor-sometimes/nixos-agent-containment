@@ -13,6 +13,21 @@ services.agentContainment.agents.agent = {
 };
 ```
 
+## Design: secure, auditable, comfortable, configurable
+
+Every feature is held to four things at once:
+
+- **Secure**: an agent gets nothing by default that it could use to widen its own reach. Every wall
+  is enforced below the agent (kernel, systemd, sshd), not by its cooperation.
+- **Auditable**: what it ran, where it connected and what it was refused are recorded by root,
+  where the agent can't edit them. Detection results are hidden from the agent, so it can't learn
+  the rules.
+- **Comfortable**: ordinary work just works: shells, user services and Nix builds already have the
+  proxy, long jobs are one command (`agent-job`), and the agent can see whether a deploy or the
+  nightly upgrade went through (`/run/agent-host-status`) without reading anyone's logs.
+- **Configurable**: each resource or permission is one option with a conservative default, so
+  allowing or denying something is a one-line change you review (see Permissions below).
+
 ## What each agent gets
 
 | Wall | How | Check |
@@ -26,6 +41,16 @@ services.agentContainment.agents.agent = {
 
 The agent's proxy settings reach every shell it gets (bash, sh, fish) and its systemd user
 services. Programs that ignore proxy settings fail closed: they're blocked, not leaked.
+
+Working inside the walls:
+
+- **`agent-job start NAME CMD...`** runs a long job as a transient systemd user unit, so it
+  outlives the ssh session (`list`, `status`, `log [-f]`, `wait`, `stop`; logs under
+  `~/.local/state/agent-job/`). It runs as the agent, in its slice, behind its wall, and its
+  commands are in the audit trail; `wait` exits with the job's exit code.
+- **`/run/agent-host-status`** (world-readable, written by root every 5 minutes): the system
+  version and generation, whether a reboot is pending, the release check, and for each unit you
+  list in `hostStatus.units` its last result and, if it failed, its error lines.
 
 ## What it does not protect against
 
@@ -119,26 +144,53 @@ the before and after numbers for a baseline week and a tuned week.
 Limits: detection runs every 15 minutes, so it is a review queue, not a tripwire. It sees execs,
 not file reads by a program that is already running.
 
-## Options
+## Permissions: what you allow or deny
 
-Per agent (`services.agentContainment.agents.<name>`): `uid` (fixed; rules match on it), `shell`,
-`sshKeys`, `extraGroups`, `linger` (default true), `egress.{enable, allowedDomains,
-allowedHostPatterns, proxyPort}`, `limits.{cpuQuota, memoryHigh, memoryMax, tasksMax}`,
-`audit.enable`, `ssh.{lockDown, addToAllowUsers}`, `allowNixBuilds`. Global:
+Each agent (`services.agentContainment.agents.<name>`) is one entry; each row is one permission.
+
+| Permission | Option | Default |
+| --- | --- | --- |
+| Network: which hosts | `egress.allowedDomains` (and subdomains), `egress.allowedHostPatterns` | none |
+| Network: walled at all | `egress.enable` | on (walled) |
+| CPU, memory, processes | `limits.{cpuQuota, memoryHigh, memoryMax, tasksMax}` | 400%, none, 8G, 4096 |
+| Jobs outliving its sessions | `linger` | on |
+| Nix builds (daemon, untrusted) | `allowNixBuilds` (needs `nixBuilders.wallWith`) | off |
+| Groups (never wheel: asserted) | `extraGroups` | none |
+| ssh: a shell and nothing else | `ssh.lockDown` | on |
+| ssh: in `AllowUsers` | `ssh.addToAllowUsers` (only if you set `AllowUsers` already) | off |
+| Recorded in the audit trail | `audit.enable` | on |
+| What it may know about the host | `hostStatus.enable`, `hostStatus.units` (global) | on, `nixos-upgrade` |
+
+Also per agent: `uid` (fixed; rules match on it), `shell`, `sshKeys`, `egress.proxyPort`. Global:
 `nixBuilders.wallWith` (agent whose wall the nixbld users share), `auditWatchPaths` and
-`auditExtraRules` (default: audit every sudo exec).
-`detection.{enable, rules, excludeRules, interval, retentionDays, laurelLogSize,
-laurelLogGenerations}` (see Detection above).
-`ssh.addToAllowUsers` only makes sense if you already set `AllowUsers` (adding to an unset list
-would lock everyone else out). Assertions refuse an agent in wheel, Nix builds without a builder
-wall, and two agents on one proxy port. See [module.nix](module.nix).
+`auditExtraRules` (default: audit every sudo exec), `detection.{enable, rules, excludeRules,
+interval, retentionDays, laurelLogSize, laurelLogGenerations}` (see Detection above),
+`hostStatus.interval`. Assertions refuse an agent in wheel, Nix builds without a builder wall, and
+two agents on one proxy port. See [module.nix](module.nix).
+
+### Requesting a permission
+
+The agent can't change any of this; you can. So a request is a reviewable change to your
+configuration, and your deploy is the decision:
+
+1. The agent hits a wall (a 403 from its proxy, a memory cap, a missing tool) and proposes the
+   smallest change that fixes it: one option, with the reason, as a commit or diff to your config
+   ("allow `files.pythonhosted.org`: pip downloads wheels from there").
+2. You read it and deploy it (allow), or don't (deny). Nothing changes until you do.
+3. The config's history is the permission log: every grant with its date and reason.
+
+For this to hold, the agent must not be able to deploy its own change: build the host from a copy
+only you update (your own clone, pulled by you), never from a branch the agent can push to.
+`agent-audit` shows what it was refused, so you can check a request against what actually
+happened.
 
 ## Gotchas learned the hard way
 
 - **Rootless containers** run as the agent's uid, so they're walled too, but their `127.0.0.1` is
   their own: use `--network host` so the proxy is reachable.
 - **`nixos-rebuild switch` can restart the agent's user session**, killing its long-running jobs.
-  Rebuild between agent sessions.
+  Rebuild between agent sessions: `sudo -u <agent> XDG_RUNTIME_DIR=/run/user/<uid> agent-job
+  list` (or the agent's `app.slice` under `/sys/fs/cgroup`) shows what is running.
 - **New allowed hosts show up as 403s first**: a toolchain's download mirror, a container
   registry's CDN host. Check the refused list, then decide.
 - **Agents' Nix builds run outside their slice** (as nixbld under the daemon); cap them with

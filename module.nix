@@ -139,6 +139,37 @@ let
     RETENTION_DAYS = toString det.retentionDays;
     STATE_DIR = "/var/lib/agent-detection";
   };
+  agentJob = pkgs.writeShellApplication {
+    name = "agent-job";
+    runtimeInputs = with pkgs; [ systemd coreutils gnugrep gnused bash ];
+    text = builtins.readFile ./agent-job.sh;
+  };
+
+  hostStatus = pkgs.writeShellApplication {
+    name = "agent-host-status";
+    runtimeInputs = with pkgs; [ systemd coreutils gnugrep ];
+    text = ''
+      out=$(mktemp)
+      {
+        echo "updated: $(date -Is)"
+        echo "system: $(cat /run/current-system/nixos-version) ($(readlink /nix/var/nix/profiles/system))"
+        if [ "$(readlink -f /run/booted-system)" = "$(readlink -f /run/current-system)" ]; then echo "reboot: not needed"
+        else echo "reboot: pending (booted an older system)"; fi
+        if [ -r /run/nixos-outdated ]; then echo "release: $(cat /run/nixos-outdated)"; else echo "release: current"; fi
+        units=( ${lib.escapeShellArgs cfg.hostStatus.units} )
+        for u in "''${units[@]}"; do
+          eval "$(systemctl show "$u.service" -p Result -p ExecMainStatus -p ActiveState -p InvocationID \
+            -p ExecMainExitTimestamp | sed 's/^\([A-Za-z]*\)=\(.*\)$/\1="\2"/')"
+          echo "$u: ''${ActiveState:-unknown}, last result ''${Result:-none} (exit ''${ExecMainStatus:-?}) at ''${ExecMainExitTimestamp:-never}"
+          if [ "''${Result:-success}" != success ] && [ -n "''${InvocationID:-}" ]; then
+            journalctl -q -o cat _SYSTEMD_INVOCATION_ID="$InvocationID" | grep -iE '(^|[^a-z_])error' | head -n 10 | sed 's/^/    /'
+          fi
+        done
+      } > "$out"
+      install -m 0644 "$out" /run/agent-host-status
+      rm -f "$out"
+    '';
+  };
 in
 {
   options.services.agentContainment = {
@@ -185,6 +216,22 @@ in
       laurelLogSize = mkOption { type = types.int; default = 50000000; description = "Laurel's log rotation size in bytes."; };
       laurelLogGenerations = mkOption { type = types.int; default = 20; description = "Rotated Laurel logs to keep (a pass must run before this many fill up)."; };
     };
+    hostStatus = {
+      enable = mkOption {
+        type = types.bool; default = true;
+        description = ''A world-readable /run/agent-host-status, rewritten every few minutes: the running
+          system's version and generation, whether a reboot is pending, the release check, and for each
+          unit in `units` its last result with the error lines of a failed run. Lets an agent confirm a
+          deploy or the nightly upgrade without journal access (the systemd-journal group would show it
+          every user's logs). Detection results are never in it.'';
+      };
+      units = mkOption {
+        type = types.listOf types.str; default = [ "nixos-upgrade" ];
+        example = [ "nixos-upgrade" "nixos-release-check" ];
+        description = "Systemd services whose last result (and error lines) the agents may see. Name each one: nothing else is shown.";
+      };
+      interval = mkOption { type = types.str; default = "*:0/5"; description = "systemd OnCalendar of the status refresh."; };
+    };
   };
 
   config = mkIf (agents != { }) (mkMerge [
@@ -204,6 +251,8 @@ in
         inherit (a) uid shell linger extraGroups;
         isNormalUser = true;
         openssh.authorizedKeys.keys = a.sshKeys;
+        # `agent-job start NAME CMD`: long jobs as user units (whether they outlive the session is `linger`)
+        packages = [ agentJob ];
       }) agents;
 
       # Resources: the agent's whole login (builds, jobs, rootless containers) shares these limits.
@@ -293,6 +342,19 @@ in
           set -gx no_proxy localhost,127.0.0.1; set -gx NO_PROXY localhost,127.0.0.1
         end
       '') walled);
+    })
+
+    (mkIf cfg.hostStatus.enable {
+      # What the agents may know about the host: versions and the named units' results, readable by
+      # everyone, written by root (agents read it, can't change it).
+      systemd.services.agent-host-status = {
+        description = "Host status for contained agents (/run/agent-host-status)";
+        serviceConfig = { Type = "oneshot"; ExecStart = lib.getExe hostStatus; };
+      };
+      systemd.timers.agent-host-status = {
+        wantedBy = [ "timers.target" ];
+        timerConfig = { OnCalendar = cfg.hostStatus.interval; OnBootSec = "1min"; };
+      };
     })
 
     (mkIf (any (a: a.audit.enable) (attrValues agents)) {

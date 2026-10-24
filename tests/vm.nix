@@ -55,6 +55,12 @@ pkgs.testers.runNixOSTest {
       };
       nixBuilders.wallWith = "bot";
       detection.enable = true;
+      hostStatus.units = [ "status-drill" ];
+    };
+    # a unit that fails, for the host status drill
+    systemd.services.status-drill = {
+      serviceConfig.Type = "oneshot";
+      script = "echo 'error: drill broke on purpose'; exit 4";
     };
   };
 
@@ -172,5 +178,30 @@ pkgs.testers.runNixOSTest {
         before = machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl | wc -l")
         machine.succeed("systemctl start agent-detection.service")
         assert machine.succeed("cat /var/lib/agent-detection/alerts/*.jsonl | wc -l") == before
+
+    with subtest("agent-job: a job outlives its shell, has the proxy, gets through the wall, keeps its exit code"):
+        machine.succeed(bot("agent-job start probe sh -c 'echo proxy=$https_proxy; curl -fsS -m 10 http://allowed.test/; echo; exit 3'"))
+        status, out = machine.execute(bot("agent-job wait probe"))
+        print(out)
+        assert status == 3, f"wait should exit 3, got {status}"
+        joblog = machine.succeed(bot("agent-job log probe"))
+        assert "proxy=http://127.0.0.1:3128" in joblog and "ok" in joblog and "agent-job: exit 3" in joblog
+        assert "exit 3" in machine.succeed(bot("agent-job list"))
+        # still walled: a job is no way around the proxy
+        machine.succeed(bot("agent-job start around curl -fsS -m 5 --noproxy '*' http://${webIP}/"))
+        machine.fail(bot("agent-job wait around"))
+        # the job's commands are in the audit trail like any other
+        machine.wait_until_succeeds("ausearch -k agent-bot-exec -i | grep -q 'allowed.test'")
+
+    with subtest("host status: readable by the agent, shows a failed unit's errors, no journal access"):
+        machine.fail("systemctl start status-drill.service")
+        machine.succeed("systemctl start agent-host-status.service")
+        st = machine.succeed(bot("cat /run/agent-host-status"))
+        print(st)
+        assert "status-drill: failed" in st and "exit 4" in st and "error: drill broke on purpose" in st
+        assert "system: " in st and "reboot: " in st
+        machine.succeed("test \"$(stat -c %U:%a /run/agent-host-status)\" = root:644")
+        machine.fail(bot("echo x > /run/agent-host-status"))
+        machine.fail(bot("journalctl -u status-drill.service | grep -q 'drill broke'"))
   '';
 }
