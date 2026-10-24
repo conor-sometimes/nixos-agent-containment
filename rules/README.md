@@ -49,3 +49,8 @@ record the before/after. Each rule's `falsepositives:` is the starting point.
 must fire its rule under Zircolite; a benign event must not. The point is one *deliberate*
 true positive you created — run the harmless-but-forbidden command as the agent, confirm the rule
 fires with the right argv in the alert — beats any number of theoretical ones.
+
+Run them all: `rules/tests/run.sh FIELD_MAPPINGS.json` (zircolite and jq on PATH; the mappings
+are the module's `ZIRCOLITE_MAPPINGS`). Every false positive gets a fixture of its own
+(`*.expect-none.json`, e.g. `py_compile_stdlib`), so the fix stays fixed. Note that one rule
+that fails to parse drops the whole ruleset in Zircolite: run the fixtures after every edit.

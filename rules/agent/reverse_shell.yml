@@ -18,14 +18,16 @@ detection:
     CommandLine|contains:
       - '/dev/tcp/'
       - '/dev/udp/'
+  # the one-liner's syntax, not bare words: a long argv of file names (py_compile over the
+  # stdlib lists socket.py, multiprocessing/connection.py, subprocess.py) must not match
   python_socket:
     CommandLine|contains|all:
-      - 'socket'
-      - 'connect'
+      - 'socket.socket('
+      - '.connect('
     CommandLine|contains:
-      - 'subprocess'
-      - 'pty.spawn'
-      - 'os.dup2'
+      - 'subprocess.'
+      - 'pty.spawn('
+      - 'os.dup2('
   nc_exec:
     CommandLine|re: '\bnc\b.*(-e|-c)\s'
   perl_ruby:
@@ -36,4 +38,6 @@ detection:
   condition: bash_devtcp or python_socket or nc_exec or perl_ruby
 falsepositives:
   - Rare; a legitimate network-probe script using /dev/tcp. On a contained agent, review it.
+  - "(fixed 2026-10-24) an apt postinstall byte-compiling Python's stdlib in a container; its argv
+    named socket.py, connection.py and subprocess.py. Now matched on syntax, not words."
 level: critical

